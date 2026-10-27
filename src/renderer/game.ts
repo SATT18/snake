@@ -22,6 +22,9 @@ const OPPOSITE: Record<Direction, Direction> = {
   right: "left",
 };
 
+// По часовой стрелке, если смотреть на поле сверху (ось y направлена вниз)
+const CLOCKWISE: Direction[] = ["up", "right", "down", "left"];
+
 export class SnakeGame {
   snake: Point[] = [];
   food: Point = { x: 0, y: 0 };
@@ -59,6 +62,17 @@ export class SnakeGame {
     const last = this.queue.length ? this.queue[this.queue.length - 1] : this.direction;
     if (dir === last || dir === OPPOSITE[last]) return;
     if (this.queue.length < 3) this.queue.push(dir);
+  }
+
+  /** Поворот относительно текущего курса — для камеры, которая смотрит из-за спины. */
+  turnRelative(side: "left" | "right"): void {
+    const heading = this.queue.length ? this.queue[this.queue.length - 1] : this.direction;
+    const i = CLOCKWISE.indexOf(heading);
+    this.turn(CLOCKWISE[(i + (side === "right" ? 1 : 3)) % 4]);
+  }
+
+  start(): void {
+    if (this.status === "ready") this.status = "running";
   }
 
   togglePause(): void {

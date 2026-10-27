@@ -6,8 +6,7 @@
     "lib": ["ES2022", "DOM"],
     "strict": true,
     "skipLibCheck": true,
-    "outDir": "dist/renderer",
-    "rootDir": "src/renderer"
+    "noEmit": true
   },
   "include": ["src/renderer/**/*.ts"]
 }

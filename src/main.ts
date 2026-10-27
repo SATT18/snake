@@ -3,11 +3,12 @@ import * as path from "path";
 
 function createWindow(): void {
   const win = new BrowserWindow({
-    width: 640,
-    height: 760,
+    width: 1100,
+    height: 720,
+    useContentSize: true,
     resizable: false,
     title: "Snake",
-    backgroundColor: "#0f172a",
+    backgroundColor: "#7cc8ff",
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

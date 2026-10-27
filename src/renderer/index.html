@@ -7,22 +7,22 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <header>
-      <div class="stat"><span>Счёт</span><b id="score">0</b></div>
-      <h1>🐍 Snake</h1>
-      <div class="stat"><span>Рекорд</span><b id="best">0</b></div>
-    </header>
+    <canvas id="board"></canvas>
 
-    <div class="board-wrap">
-      <canvas id="board"></canvas>
-      <div id="overlay">
+    <div id="hud">
+      <div class="pill"><span class="coin"></span><b id="score">0</b></div>
+      <div class="pill"><span class="label">Рекорд</span><b id="best">0</b></div>
+    </div>
+
+    <div id="overlay">
+      <div class="card">
         <h2 id="overlay-title"></h2>
         <p id="overlay-text"></p>
       </div>
     </div>
 
-    <footer>Стрелки / WASD — движение · Пробел — пауза · Enter — заново</footer>
+    <footer>← → / A D — повернуть · ↑ / W — старт · Пробел — пауза · Enter — заново</footer>
 
-    <script type="module" src="app.js"></script>
+    <script src="app.js"></script>
   </body>
 </html>
