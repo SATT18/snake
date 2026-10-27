@@ -2,16 +2,18 @@
 // горы на горизонте, облака, птицы и воздушные шары.
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
+import type { Obstacle } from "./levels.js";
+import type { Theme } from "./themes.js";
 
 export const TILE_TOP = 0.1; // высота верхней грани плиток поля
-export const SKY_HORIZON = new THREE.Color(0xcdeeff);
-export const SUN_DIR = new THREE.Vector3(-0.5, 0.6, -0.62).normalize();
 
 const OCEAN_Y = -7;
 const GROUND_Y = -0.02; // верх травяного края острова вокруг поля
 
 export interface World {
   update(time: number, dt: number): void;
+  setTheme(theme: Theme): void;
+  setObstacles(obstacles: Obstacle[]): void;
 }
 
 type Updater = (time: number, dt: number) => void;
@@ -60,18 +62,20 @@ const trunkMat = mat(0x8b5a2b, { roughness: 0.9 });
 
 // ---------- Мир ----------
 
-/** Градиентное небо с солнцем. Отдельной функцией — его же используем как карту окружения. */
-export function createSky(): THREE.Mesh {
-  const material = new THREE.ShaderMaterial({
-    side: THREE.BackSide,
-    depthWrite: false,
-    fog: false,
-    uniforms: {
-      top: { value: new THREE.Color(0x2f8cff) },
-      horizon: { value: SKY_HORIZON },
-      bottom: { value: new THREE.Color(0x7cc8ff) },
-      sunDir: { value: SUN_DIR },
-    },
+// Один материал неба на всех: и на сцене, и в сцене для карты окружения — тема меняет оба сразу
+const skyMaterial = new THREE.ShaderMaterial({
+  side: THREE.BackSide,
+  depthWrite: false,
+  fog: false,
+  uniforms: {
+    top: { value: new THREE.Color() },
+    horizon: { value: new THREE.Color() },
+    bottom: { value: new THREE.Color() },
+    sunDir: { value: new THREE.Vector3(0, 1, 0) },
+    sunColor: { value: new THREE.Color() },
+    sunSize: { value: 900 },
+    halo: { value: 0.35 },
+  },
     vertexShader: /* glsl */ `
       varying vec3 vDir;
       void main() {
@@ -83,19 +87,25 @@ export function createSky(): THREE.Mesh {
       uniform vec3 horizon;
       uniform vec3 bottom;
       uniform vec3 sunDir;
+      uniform vec3 sunColor;
+      uniform float sunSize;
+      uniform float halo;
       varying vec3 vDir;
       void main() {
         vec3 dir = normalize(vDir);
         float h = dir.y;
         vec3 c = h > 0.0 ? mix(horizon, top, pow(h, 0.55)) : mix(horizon, bottom, pow(-h, 0.4));
         float s = max(dot(dir, sunDir), 0.0);
-        c += vec3(1.0, 0.93, 0.78) * (pow(s, 900.0) * 8.0 + pow(s, 20.0) * 0.35);
+        c += sunColor * (pow(s, sunSize) * 8.0 + pow(s, 20.0) * halo);
         gl_FragColor = vec4(c, 1.0);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
       }`,
-  });
-  return new THREE.Mesh(new THREE.SphereGeometry(400, 32, 16), material);
+});
+
+/** Градиентное небо с солнцем. Отдельной функцией — его же используем как карту окружения. */
+export function createSky(): THREE.Mesh {
+  return new THREE.Mesh(new THREE.SphereGeometry(400, 32, 16), skyMaterial);
 }
 
 export function createWorld(scene: THREE.Scene, cols: number, rows: number): World {
@@ -103,7 +113,11 @@ export function createWorld(scene: THREE.Scene, cols: number, rows: number): Wor
   const islandHalf = Math.max(cols, rows) / 2 + 4.5;
 
   scene.add(createSky());
-  scene.fog = new THREE.Fog(SKY_HORIZON, 60, 230);
+  const fog = new THREE.Fog(0xffffff, 60, 230);
+  scene.fog = fog;
+
+  const stars = createStars();
+  scene.add(stars);
 
   const ocean = createOcean();
   scene.add(ocean.mesh);
@@ -117,11 +131,126 @@ export function createWorld(scene: THREE.Scene, cols: number, rows: number): Wor
   scene.add(createMountains());
   createSkyLife(scene, updaters);
 
+  let obstacleGroup: THREE.Group | null = null;
+
   return {
     update(time, dt) {
       for (const u of updaters) u(time, dt);
     },
+    setTheme(theme) {
+      const u = skyMaterial.uniforms;
+      u.top.value.set(theme.skyTop);
+      u.horizon.value.set(theme.skyHorizon);
+      u.bottom.value.set(theme.skyBottom);
+      u.sunDir.value.copy(theme.sunDir);
+      u.sunColor.value.set(theme.sunDisc);
+      u.sunSize.value = theme.sunSize;
+      u.halo.value = theme.halo;
+      fog.color.set(theme.skyHorizon);
+
+      (ocean.mesh.material as THREE.MeshStandardMaterial).color.set(theme.ocean);
+      (stars.material as THREE.PointsMaterial).opacity = theme.stars;
+      stars.visible = theme.stars > 0;
+      cloudMat.color.set(theme.cloud);
+      cloudMat.emissive.set(theme.cloud);
+      glow = theme.glow;
+      glassMat.emissiveIntensity = 0.9 * glow;
+    },
+    setObstacles(obstacles) {
+      if (obstacleGroup) {
+        scene.remove(obstacleGroup);
+        obstacleGroup.traverse((o) => {
+          if (o instanceof THREE.InstancedMesh) o.dispose();
+        });
+      }
+      obstacleGroup = createObstacles(obstacles, cols, rows);
+      scene.add(obstacleGroup);
+    },
   };
+}
+
+// Множитель свечения окон и фонарей: ночью они горят ярче
+let glow = 1;
+
+function createStars(): THREE.Points {
+  const count = 1500;
+  const positions = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    const y = range(0.04, 1);
+    const r = Math.sqrt(1 - y * y);
+    const a = range(0, Math.PI * 2);
+    positions.set([Math.cos(a) * r * 380, y * 380, Math.sin(a) * r * 380], i * 3);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  return new THREE.Points(
+    geometry,
+    new THREE.PointsMaterial({
+      color: 0xffffff,
+      size: 1.8,
+      sizeAttenuation: false,
+      transparent: true,
+      opacity: 0,
+      fog: false,
+      depthWrite: false,
+    }),
+  );
+}
+
+// ---------- Препятствия уровня ----------
+
+const OBSTACLE_HEDGE_GEO = new RoundedBoxGeometry(1.02, 0.8, 1.02, 3, 0.34);
+const OBSTACLE_ROCK_GEO = new THREE.DodecahedronGeometry(0.45, 0);
+
+/** Псевдослучайное число от координат клетки: препятствие выглядит одинаково при каждой загрузке. */
+function cellNoise(x: number, y: number, salt: number): number {
+  const s = Math.sin(x * 12.9898 + y * 78.233 + salt * 37.719) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+function createObstacles(obstacles: Obstacle[], cols: number, rows: number): THREE.Group {
+  const g = new THREE.Group();
+  const hedges = obstacles.filter((o) => o.kind === "hedge");
+  const stones = obstacles.filter((o) => o.kind === "rock");
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const e = new THREE.Euler();
+  const s = new THREE.Vector3();
+  const p = new THREE.Vector3();
+  const c = new THREE.Color();
+  const base = TILE_TOP - 0.02;
+
+  if (hedges.length) {
+    const mesh = new THREE.InstancedMesh(OBSTACLE_HEDGE_GEO, new THREE.MeshStandardMaterial({ roughness: 0.95 }), hedges.length);
+    mesh.castShadow = mesh.receiveShadow = true;
+    hedges.forEach((o, i) => {
+      const h = 0.8 + cellNoise(o.x, o.y, 1) * 0.25;
+      s.set(1, h, 1);
+      p.set(o.x - cols / 2 + 0.5, base + 0.4 * h, o.y - rows / 2 + 0.5);
+      mesh.setMatrixAt(i, m.compose(p, q.identity(), s));
+      mesh.setColorAt(i, c.setHSL(0.31 + cellNoise(o.x, o.y, 2) * 0.03, 0.7, 0.26 + cellNoise(o.x, o.y, 3) * 0.06));
+    });
+    g.add(mesh);
+  }
+
+  if (stones.length) {
+    const mesh = new THREE.InstancedMesh(
+      OBSTACLE_ROCK_GEO,
+      new THREE.MeshStandardMaterial({ roughness: 0.9, flatShading: true }),
+      stones.length,
+    );
+    mesh.castShadow = mesh.receiveShadow = true;
+    stones.forEach((o, i) => {
+      const n = (k: number) => cellNoise(o.x, o.y, k);
+      s.set(0.95 + n(4) * 0.2, 0.7 + n(5) * 0.35, 0.95 + n(6) * 0.2);
+      q.setFromEuler(e.set(n(7) * 0.4, n(8) * Math.PI * 2, n(9) * 0.4));
+      p.set(o.x - cols / 2 + 0.5, base + 0.3 * s.y, o.y - rows / 2 + 0.5);
+      mesh.setMatrixAt(i, m.compose(p, q, s));
+      mesh.setColorAt(i, c.setHSL(0.6, 0.06, 0.55 + n(10) * 0.12));
+    });
+    g.add(mesh);
+  }
+  return g;
 }
 
 function createOcean(): { mesh: THREE.Mesh; update: Updater } {
@@ -422,8 +551,10 @@ function createLighthouse(): { group: THREE.Group; update: Updater } {
   const lampMat = new THREE.MeshStandardMaterial({ color: 0xfff3c4, emissive: 0xffd36b, emissiveIntensity: 3 });
   g.add(mesh(new THREE.CylinderGeometry(0.45, 0.45, 0.7, 12), lampMat, 0, topY + 0.5));
   g.add(mesh(new THREE.ConeGeometry(0.65, 0.8, 12), mat(0xe04848, { roughness: 0.5 }), 0, topY + 1.25));
-  return { group: g, update: (t) => (lampMat.emissiveIntensity = 2.2 + Math.sin(t * 3) * 1.6) };
+  return { group: g, update: (t) => (lampMat.emissiveIntensity = (2.2 + Math.sin(t * 3) * 1.6) * glow) };
 }
+
+const glassMat = new THREE.MeshStandardMaterial({ color: 0xffe3a0, emissive: 0xffc861, emissiveIntensity: 0.9 });
 
 function createHouse(roofColor: number): THREE.Group {
   const g = new THREE.Group();
@@ -433,9 +564,8 @@ function createHouse(roofColor: number): THREE.Group {
   roof.scale.set(1.05, 1, 0.9);
   g.add(roof);
   g.add(mesh(new THREE.BoxGeometry(0.5, 0.9, 0.06), mat(0x7a4a24), 0, 0.45, 1.01));
-  const glass = mat(0xffe3a0, { emissive: 0xffc861, emissiveIntensity: 0.9 });
-  g.add(mesh(new THREE.BoxGeometry(0.45, 0.45, 0.06), glass, -0.75, 1.05, 1.01));
-  g.add(mesh(new THREE.BoxGeometry(0.45, 0.45, 0.06), glass, 0.75, 1.05, 1.01));
+  g.add(mesh(new THREE.BoxGeometry(0.45, 0.45, 0.06), glassMat, -0.75, 1.05, 1.01));
+  g.add(mesh(new THREE.BoxGeometry(0.45, 0.45, 0.06), glassMat, 0.75, 1.05, 1.01));
   g.add(mesh(new THREE.BoxGeometry(0.3, 0.8, 0.3), mat(0xb5523b), 0.6, 2.5, -0.3));
   return g;
 }
@@ -603,7 +733,8 @@ function createMountains(): THREE.Group {
 
 // ---------- Небо: облака, птицы, шары ----------
 
-const cloudMat = mat(0xffffff, { roughness: 1, emissive: 0xdbe9ff, emissiveIntensity: 0.25 });
+// Отдельный экземпляр (не из кэша): тема перекрашивает облака
+const cloudMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, emissive: 0xdbe9ff, emissiveIntensity: 0.25 });
 
 function createCloud(scale: number): THREE.Group {
   const cloud = new THREE.Group();

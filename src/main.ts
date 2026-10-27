@@ -9,6 +9,7 @@ function createWindow(): void {
     resizable: false,
     title: "Snake",
     backgroundColor: "#7cc8ff",
+    icon: path.join(__dirname, "icon.png"),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -16,7 +17,8 @@ function createWindow(): void {
     },
   });
 
-  Menu.setApplicationMenu(null);
+  // На macOS оставляем стандартное меню приложения (⌘Q, ⌘H), на Windows меню не нужно
+  Menu.setApplicationMenu(process.platform === "darwin" ? Menu.buildFromTemplate([{ role: "appMenu" }]) : null);
   win.loadFile(path.join(__dirname, "renderer", "index.html"));
 }
 

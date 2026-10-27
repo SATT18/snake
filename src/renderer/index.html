@@ -3,25 +3,48 @@
   <head>
     <meta charset="UTF-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'" />
-    <title>Snake</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <title>Змейка 3D</title>
+    <link rel="icon" href="favicon.ico" />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
     <canvas id="board"></canvas>
 
-    <div id="hud">
-      <div class="pill"><span class="coin"></span><b id="score">0</b></div>
-      <div class="pill"><span class="label">Рекорд</span><b id="best">0</b></div>
+    <div id="hud" class="hidden">
+      <div class="pill"><span class="coin"></span><b id="coins">0</b><span class="of">/ <span id="goal">0</span></span></div>
+      <div class="pill level-pill"><span id="level-name"></span></div>
+      <div class="pill"><span class="clock"></span><b id="timer">0:00</b></div>
     </div>
 
-    <div id="overlay">
+    <div id="menu" class="screen hidden">
+      <h1 class="logo">Змейка <span>3D</span></h1>
+      <p class="tagline">Пять островов, одна голодная змейка</p>
+      <div id="level-list" class="levels"></div>
+      <div class="menu-actions">
+        <button id="btn-credits" class="primary">Титры</button>
+        <button id="btn-camera" class="ghost"></button>
+        <button id="btn-shake" class="ghost"></button>
+        <button id="btn-reset" class="ghost">Сбросить прогресс</button>
+      </div>
+      <p class="hint">← → — выбрать уровень · Enter — играть · C — режим камеры</p>
+    </div>
+
+    <div id="dialog" class="screen hidden">
       <div class="card">
-        <h2 id="overlay-title"></h2>
-        <p id="overlay-text"></p>
+        <p id="dialog-kicker" class="kicker"></p>
+        <h2 id="dialog-title"></h2>
+        <div id="dialog-body" class="dialog-body"></div>
+        <div id="dialog-actions" class="actions"></div>
       </div>
     </div>
 
-    <footer>← → / A D — повернуть · ↑ / W — старт · Пробел — пауза · Enter — заново</footer>
+    <div id="credits" class="screen hidden">
+      <div id="credits-roll" class="credits-roll"></div>
+      <p class="hint credits-hint">Esc — в меню</p>
+    </div>
+
+    <footer id="controls-hint" class="hidden"></footer>
 
     <script src="app.js"></script>
   </body>

@@ -5,22 +5,19 @@ import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
-import { Direction, Point, SnakeGame } from "./game.js";
-import { createSky, createWorld, SUN_DIR, TILE_TOP } from "./world.js";
+import { Direction, Point, SnakeGame, Status } from "./game.js";
+import { LEVELS, levelConfig, starsFor } from "./levels.js";
+import { isUnlocked, loadProgress, resetProgress, saveResult } from "./progress.js";
+import { loadSettings, saveSettings } from "./settings.js";
+import { THEMES, ThemeName } from "./themes.js";
+import * as ui from "./ui.js";
+import { createSky, createWorld, TILE_TOP } from "./world.js";
 
 const COLS = 20;
 const ROWS = 20;
-const BEST_KEY = "snake.best";
+const LEVEL_IDS = LEVELS.map((l) => l.id);
 
 const canvas = document.getElementById("board") as HTMLCanvasElement;
-const scoreEl = document.getElementById("score")!;
-const bestEl = document.getElementById("best")!;
-const overlay = document.getElementById("overlay")!;
-const overlayTitle = document.getElementById("overlay-title")!;
-const overlayText = document.getElementById("overlay-text")!;
-
-const game = new SnakeGame(COLS, ROWS);
-let best = loadBest();
 
 // ---------- Рендерер и постобработка ----------
 
@@ -31,30 +28,75 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 // Neutral сохраняет насыщенность цветов — для яркого мультяшного стиля лучше ACES
 renderer.toneMapping = THREE.NeutralToneMapping;
-renderer.toneMappingExposure = 1.05;
 
 const scene = new THREE.Scene();
+const world = createWorld(scene, COLS, ROWS);
 
-// Карта окружения из того же неба: глянцевые поверхности отражают голубое небо
+// Карта окружения из того же неба: глянцевые поверхности отражают небо текущей темы
 const pmrem = new THREE.PMREMGenerator(renderer);
 const envScene = new THREE.Scene();
 envScene.add(createSky());
-scene.environment = pmrem.fromScene(envScene, 0, 0.1, 1000).texture;
-scene.environmentIntensity = 0.6;
+let envTarget: THREE.WebGLRenderTarget | null = null;
 
-const world = createWorld(scene, COLS, ROWS);
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
 
-const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 1000);
-// Камера от третьего лица: держится за спиной змейки и плавно доворачивает вслед за ней
-const CAM_BACK = 8.5;
-const CAM_UP = 7.5;
-const LOOK_AHEAD = 4;
-const camPos = new THREE.Vector3();
+// Камера построена по правилам против укачивания:
+// - никаких поворотов, которых игрок не просил: в классическом режиме угол обзора неизменен;
+// - движение через критически демпфированную пружину — разгон и торможение без рывков;
+// - мёртвая зона: камера не дёргается за каждым шагом змейки;
+// - в режиме «за спиной» камера вращается вокруг головы по дуге, начинает доворачивать сразу
+//   по нажатию (предсказуемо для игрока) и смотрит круто вниз — так вращение воспринимается
+//   как поворот карты, а не всего мира, и в кадр попадает всё поле впереди и по бокам.
+const CLASSIC_OFFSET = new THREE.Vector3(0, 15, 10.5);
+const CLASSIC_FOLLOW = 0.7; // 0 — камера над центром поля, 1 — над головой
+const DEAD_ZONE = 1.5;
+const CHASE_BACK = 6.5; // насколько камера позади головы
+const CHASE_UP = 12; // высота: наклон ~50°, поле впереди видно до самой изгороди
+const CHASE_LOOK_AHEAD = 3.5; // голова в нижней трети кадра, больше места впереди
+const CHASE_YAW_TIME = 0.16; // сглаживание поворота: 90° укладываются примерно в 0,45 с
+const CHASE_MAX_YAW_SPEED = 5; // рад/с — потолок на случай разворота на 180°
+const CHASE_FOLLOW_TIME = 0.08; // фокус почти без задержки идёт за головой
+
+const camPos = new THREE.Vector3(30, 14, 30);
 const camLook = new THREE.Vector3();
 const camFwd = new THREE.Vector3();
 const camGoal = new THREE.Vector3();
 const lookGoal = new THREE.Vector3();
-let camReady = false;
+const camFocus = new THREE.Vector3();
+const camPosVel = new THREE.Vector3();
+const camLookVel = new THREE.Vector3();
+const camFocusVel = new THREE.Vector3();
+const yawVel = { v: 0 };
+let transition = 1; // 1 → 0 за секунду после старта уровня: плавный въезд камеры
+
+/**
+ * Критически демпфированная пружина (как SmoothDamp в Unity): плавно разгоняется и тормозит,
+ * не перелетает цель. velocity хранит скорость между кадрами.
+ */
+function smoothDamp(current: number, target: number, velocity: { v: number }, smoothTime: number, dt: number, maxSpeed = Infinity): number {
+  const omega = 2 / smoothTime;
+  const x = omega * dt;
+  const decay = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const maxChange = maxSpeed * smoothTime;
+  const change = Math.min(Math.max(current - target, -maxChange), maxChange);
+  const temp = (velocity.v + omega * change) * dt;
+  velocity.v = (velocity.v - omega * temp) * decay;
+  let out = current - change + (change + temp) * decay;
+  if (target - current > 0 === out > target) {
+    out = target;
+    velocity.v = 0;
+  }
+  return out;
+}
+
+const axisVel = { v: 0 };
+function smoothDampVec(current: THREE.Vector3, target: THREE.Vector3, velocity: THREE.Vector3, smoothTime: number, dt: number): void {
+  for (const axis of ["x", "y", "z"] as const) {
+    axisVel.v = velocity[axis];
+    current[axis] = smoothDamp(current[axis], target[axis], axisVel, smoothTime, dt);
+    velocity[axis] = axisVel.v;
+  }
+}
 
 // HDR-буфер с MSAA: bloom работает по яркостям > 1, сглаживание не теряется
 const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
@@ -78,18 +120,45 @@ function resize(): void {
 window.addEventListener("resize", resize);
 resize();
 
-// ---------- Свет ----------
+// ---------- Свет и время суток ----------
 
-scene.add(new THREE.HemisphereLight(0xbfe3ff, 0x5a8a3a, 1.1));
+const hemi = new THREE.HemisphereLight();
+scene.add(hemi);
 
-const sun = new THREE.DirectionalLight(0xfff1d6, 3.2);
-sun.position.copy(SUN_DIR).multiplyScalar(50); // совпадает с солнцем на небе
+const sun = new THREE.DirectionalLight();
 sun.castShadow = true;
 sun.shadow.mapSize.set(4096, 4096);
 Object.assign(sun.shadow.camera, { left: -30, right: 30, top: 30, bottom: -30, near: 1, far: 120 });
 sun.shadow.bias = -0.0003;
 sun.shadow.normalBias = 0.03;
 scene.add(sun);
+
+let currentTheme: ThemeName | null = null;
+
+function applyTheme(name: ThemeName): void {
+  if (name === currentTheme) return;
+  currentTheme = name;
+  const t = THEMES[name];
+  world.setTheme(t);
+  hemi.color.set(t.hemiSky);
+  hemi.groundColor.set(t.hemiGround);
+  hemi.intensity = t.hemiIntensity;
+  sun.color.set(t.sunColor);
+  sun.intensity = t.sunIntensity;
+  sun.position.copy(t.sunDir).multiplyScalar(50); // совпадает с солнцем (луной) на небе
+  renderer.toneMappingExposure = t.exposure;
+
+  envTarget?.dispose();
+  envTarget = pmrem.fromScene(envScene, 0, 0.1, 1000);
+  scene.environment = envTarget.texture;
+  scene.environmentIntensity = t.envIntensity;
+}
+
+/** Показывает на острове препятствия и время суток уровня. */
+function showScenery(index: number): void {
+  applyTheme(LEVELS[index].theme);
+  world.setObstacles(LEVELS[index].obstacles);
+}
 
 // ---------- Поле ----------
 
@@ -221,7 +290,7 @@ const arrow = new THREE.Mesh(arrowGeo, gold);
 arrow.castShadow = true;
 scene.add(arrow);
 
-// ---------- Частицы: искры от монеты ----------
+// ---------- Частицы: искры от монеты и салют при победе ----------
 
 interface Particle {
   pos: THREE.Vector3;
@@ -232,7 +301,7 @@ interface Particle {
   size: number;
 }
 
-const MAX_PARTICLES = 220;
+const MAX_PARTICLES = 260;
 const particles: Particle[] = [];
 const particleMesh = new THREE.InstancedMesh(
   new THREE.OctahedronGeometry(0.09),
@@ -263,43 +332,43 @@ function burst(at: Point): void {
   }
 }
 
-// ---------- Управление ----------
+/** Фонтан искр из головы змейки — уровень пройден. */
+function celebrate(): void {
+  for (let i = 0; i < 90; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const speed = 1 + Math.random() * 2.5;
+    spawn({
+      pos: head.position.clone(),
+      vel: new THREE.Vector3(Math.cos(a) * speed, 7 + Math.random() * 5, Math.sin(a) * speed),
+      life: 1.2 + Math.random() * 0.8,
+      gravity: 10,
+      size: 1.3,
+    });
+  }
+}
 
-// Камера смотрит из-за спины, поэтому повороты относительные: влево/вправо от курса
-const TURN_KEYS: Record<string, "left" | "right"> = {
-  ArrowLeft: "left",
-  ArrowRight: "right",
-  KeyA: "left",
-  KeyD: "right",
-};
-const START_KEYS = new Set(["ArrowUp", "KeyW"]);
+function setActorsVisible(visible: boolean): void {
+  for (const o of [body, head, coin, coinLight, beam, arrow]) o.visible = visible;
+}
+
+// ---------- Состояние игры ----------
+
+type Mode = "menu" | "play" | "credits";
 
 const clonePoints = (pts: Point[]): Point[] => pts.map((p) => ({ x: p.x, y: p.y }));
+// step() меняет status, а TS сужает тип после проверок — читаем через функцию
+const statusOf = (g: SnakeGame): Status => g.status;
 
+const settings = loadSettings();
+let mode: Mode = "menu";
+let levelIndex = 0;
+let game = new SnakeGame(levelConfig(LEVELS[0], COLS, ROWS));
 // Позиции змейки до последнего шага: между ними и текущими плавно интерполируем
 let prev = clonePoints(game.snake);
 let acc = 0;
-
-window.addEventListener("keydown", (e) => {
-  const side = TURN_KEYS[e.code];
-  if (side) {
-    e.preventDefault();
-    game.turnRelative(side);
-  } else if (START_KEYS.has(e.code)) {
-    e.preventDefault();
-    game.start();
-  } else if (e.code === "Space" || e.code === "KeyP" || e.code === "Escape") {
-    e.preventDefault();
-    game.togglePause();
-  } else if (e.code === "Enter" && game.status === "over") {
-    game.reset();
-    prev = clonePoints(game.snake);
-    acc = 0;
-  }
-  updateUi();
-});
-
-// ---------- Игровой цикл ----------
+let levelTime = 0;
+let shownStatus: Status | null = null;
+let lastWin: { time: number; stars: number; newRecord: boolean } | null = null;
 
 const DIR_VEC: Record<Direction, [number, number]> = {
   up: [0, -1],
@@ -317,46 +386,308 @@ const tmpS = new THREE.Vector3();
 const tmpC = new THREE.Color();
 const tmpC2 = new THREE.Color();
 const DEAD = new THREE.Color(0x8a2a2a);
+const WARNING = new THREE.Color(0xff5a3c);
+const START_YAW = Math.atan2(1, 0); // змейка стартует головой вправо
 
 let last = performance.now();
 let time = 0;
 let shake = 0;
 let deathTint = 0;
-let headYaw = Math.atan2(1, 0);
+let headYaw = START_YAW;
+let camYaw = START_YAW;
 let foodKey = "";
 let foodAppear = 1;
 let sparkleTimer = 0;
-let camYaw = headYaw;
+
+// ---------- Переходы между экранами ----------
+
+function openMenu(): void {
+  mode = "menu";
+  ui.hideDialog();
+  ui.hideHud();
+  ui.hideCredits();
+  setActorsVisible(false);
+
+  const progress = loadProgress();
+  const unlocked = LEVELS.map((_, i) => isUnlocked(progress, LEVEL_IDS, i));
+  if (!unlocked[levelIndex]) levelIndex = 0;
+  ui.showMenu(LEVELS, progress, unlocked, levelIndex, {
+    onSelect: (i) => {
+      levelIndex = i;
+      showScenery(i);
+    },
+    onStart: (i) => startLevel(i),
+    onCredits: () => openCredits(),
+    onReset: () => {
+      resetProgress();
+      levelIndex = 0;
+      openMenu();
+    },
+    onToggleCamera: () => {
+      settings.camera = settings.camera === "classic" ? "chase" : "classic";
+      saveSettings(settings);
+      ui.showSettings(settings);
+    },
+    onToggleShake: () => {
+      settings.shake = !settings.shake;
+      saveSettings(settings);
+      ui.showSettings(settings);
+    },
+  });
+  ui.showSettings(settings);
+  showScenery(levelIndex);
+}
+
+function startLevel(index: number): void {
+  mode = "play";
+  levelIndex = index;
+  ui.hideMenu();
+  ui.hideCredits();
+  showScenery(index);
+  game = new SnakeGame(levelConfig(LEVELS[index], COLS, ROWS));
+  restartRun();
+  ui.showHud(LEVELS[index], index, settings.camera);
+  setActorsVisible(true);
+}
+
+function restartRun(): void {
+  game.reset();
+  prev = clonePoints(game.snake);
+  acc = 0;
+  levelTime = 0;
+  deathTint = 0;
+  headYaw = START_YAW;
+  camYaw = START_YAW;
+  yawVel.v = 0;
+  camFocusVel.set(0, 0, 0);
+  toWorld(game.snake[0], camFocus).multiplyScalar(settings.camera === "classic" ? CLASSIC_FOLLOW : 1);
+  transition = 1;
+  lastWin = null;
+  shownStatus = null;
+  particles.length = 0;
+}
+
+function openCredits(): void {
+  mode = "credits";
+  ui.hideMenu();
+  ui.hideDialog();
+  ui.hideHud();
+  setActorsVisible(false);
+  applyTheme("night");
+  world.setObstacles([]);
+  ui.showCredits(() => openMenu());
+}
+
+function onGameOver(): void {
+  prev = clonePoints(game.snake);
+  acc = 0;
+  if (settings.shake) shake = 0.35;
+}
+
+function onWin(): void {
+  const level = LEVELS[levelIndex];
+  const stars = starsFor(level, levelTime);
+  const { newRecord } = saveResult(level.id, levelTime, stars);
+  lastWin = { time: levelTime, stars, newRecord };
+  prev = clonePoints(game.snake);
+  acc = 0;
+  celebrate();
+}
+
+/** Показывает диалог, соответствующий текущему статусу игры. */
+function syncDialog(): void {
+  shownStatus = game.status;
+  const level = LEVELS[levelIndex];
+  const toMenu: ui.DialogAction = { label: "Меню", hint: "Esc", keys: ["Escape"], run: openMenu };
+  const retry: ui.DialogAction = { label: "Заново", hint: "R", keys: ["KeyR"], run: restartRun };
+
+  switch (game.status) {
+    case "ready":
+      ui.showDialog({
+        kicker: `Уровень ${levelIndex + 1} из ${LEVELS.length}`,
+        title: level.name,
+        body: [level.description, `Соберите ${level.goal} монет. ${ui.turnHint(settings.camera)}.`],
+        actions: [
+          { label: "Старт", hint: "↑", keys: ["ArrowUp", "KeyW", "Enter", "Space"], primary: true, run: () => game.start() },
+          toMenu,
+        ],
+      });
+      break;
+    case "paused":
+      ui.showDialog({
+        title: "Пауза",
+        body: [`Монет: ${game.coins} из ${level.goal} · ${ui.formatTime(levelTime)}`],
+        actions: [
+          { label: "Продолжить", hint: "Пробел", keys: ["Space", "Enter", "KeyP"], primary: true, run: () => game.togglePause() },
+          retry,
+          toMenu,
+        ],
+      });
+      break;
+    case "over":
+      ui.showDialog({
+        title: "Змейка разбилась",
+        tone: "lose",
+        body: [`Монет: ${game.coins} из ${level.goal}`],
+        actions: [{ ...retry, hint: "Enter", keys: ["Enter", "KeyR", "Space"], primary: true }, toMenu],
+      });
+      break;
+    case "won": {
+      const win = lastWin!;
+      const isLast = levelIndex === LEVELS.length - 1;
+      const body: (string | Node)[] = [ui.starsElement(win.stars, true), `Время: ${ui.formatTime(win.time, true)}`];
+      if (win.newRecord) {
+        const record = document.createElement("span");
+        record.className = "record";
+        record.textContent = "Новый рекорд!";
+        body.push(record);
+      }
+      ui.showDialog({
+        kicker: level.name,
+        title: isLast ? "Все острова пройдены!" : "Уровень пройден!",
+        tone: "win",
+        body,
+        actions: [
+          {
+            label: isLast ? "Титры" : "Дальше",
+            hint: "Enter",
+            keys: ["Enter", "Space"],
+            primary: true,
+            run: () => (isLast ? openCredits() : startLevel(levelIndex + 1)),
+          },
+          { label: "Ещё раз", hint: "R", keys: ["KeyR"], run: restartRun },
+          toMenu,
+        ],
+      });
+      break;
+    }
+    default:
+      ui.hideDialog();
+  }
+}
+
+// ---------- Управление ----------
+
+// Классическая камера: стрелки задают направление на поле (вверх — от камеры)
+const DIRECTION_KEYS: Record<string, Direction> = {
+  ArrowUp: "up",
+  ArrowDown: "down",
+  ArrowLeft: "left",
+  ArrowRight: "right",
+  KeyW: "up",
+  KeyS: "down",
+  KeyA: "left",
+  KeyD: "right",
+};
+// Камера за спиной: повороты относительные — влево/вправо от курса
+const TURN_KEYS: Record<string, "left" | "right"> = {
+  ArrowLeft: "left",
+  ArrowRight: "right",
+  KeyA: "left",
+  KeyD: "right",
+};
+
+window.addEventListener("keydown", (e) => {
+  if (mode === "menu") {
+    if (ui.handleMenuKey(e.code)) e.preventDefault();
+    return;
+  }
+  if (mode === "credits") {
+    if (e.code === "Escape" || e.code === "Enter") {
+      e.preventDefault();
+      openMenu();
+    }
+    return;
+  }
+
+  if (game.status === "running" || game.status === "ready") {
+    if (settings.camera === "classic") {
+      const dir = DIRECTION_KEYS[e.code];
+      if (dir) {
+        e.preventDefault();
+        game.turn(dir);
+        return;
+      }
+    } else {
+      const side = TURN_KEYS[e.code];
+      if (side) {
+        e.preventDefault();
+        game.turnRelative(side);
+        return;
+      }
+    }
+  }
+  if (game.status === "running") {
+    if (e.code === "Space" || e.code === "KeyP" || e.code === "Escape") {
+      e.preventDefault();
+      game.togglePause();
+    }
+    return;
+  }
+  if (ui.handleDialogKey(e.code)) e.preventDefault();
+});
+
+// Свайпы для сенсорных экранов (веб-версия на телефоне): тап — старт, свайп — поворот
+let touchStart: { x: number; y: number } | null = null;
+
+window.addEventListener("touchstart", (e) => {
+  touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+}, { passive: true });
+
+window.addEventListener("touchend", (e) => {
+  const start = touchStart;
+  touchStart = null;
+  if (!start || mode !== "play" || (game.status !== "running" && game.status !== "ready")) return;
+  const dx = e.changedTouches[0].clientX - start.x;
+  const dy = e.changedTouches[0].clientY - start.y;
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < 30) {
+    game.start();
+    return;
+  }
+  const horizontal = Math.abs(dx) > Math.abs(dy);
+  if (settings.camera === "classic") game.turn(horizontal ? (dx > 0 ? "right" : "left") : dy > 0 ? "down" : "up");
+  else if (horizontal) game.turnRelative(dx > 0 ? "right" : "left");
+});
+
+// ---------- Игровой цикл ----------
 
 function frame(now: number): void {
   const dt = Math.min(now - last, 100) / 1000;
   last = now;
   time += dt;
 
-  if (game.status === "running") {
-    acc += dt * 1000;
-    while (acc >= game.tickMs) {
-      acc -= game.tickMs;
-      prev = clonePoints(game.snake);
-      const eaten = game.food;
-      if (game.step()) burst(eaten);
-      // step() меняет status, но TS сузил тип до "running" — сравниваем как string
-      if ((game.status as string) === "over") {
-        onGameOver();
-        break;
+  if (mode === "play") {
+    if (game.status === "running") {
+      levelTime += dt;
+      acc += dt * 1000;
+      while (acc >= game.tickMs) {
+        acc -= game.tickMs;
+        prev = clonePoints(game.snake);
+        const eaten = game.food;
+        if (game.step()) burst(eaten);
+        const status = statusOf(game);
+        if (status === "over") {
+          onGameOver();
+          break;
+        }
+        if (status === "won") {
+          onWin();
+          break;
+        }
       }
-      updateUi();
     }
+    if (game.status !== shownStatus) syncDialog();
+    ui.updateHud(game.coins, levelTime);
+
+    const alpha = game.status === "running" || game.status === "paused" ? Math.min(acc / game.tickMs, 1) : 1;
+    deathTint += ((game.status === "over" ? 1 : 0) - deathTint) * (1 - Math.exp(-dt * 5));
+    updateSnake(alpha, dt);
+    updateCoin(dt);
+    updateArrow();
   }
 
-  const alpha = game.status === "running" || game.status === "paused" ? Math.min(acc / game.tickMs, 1) : 1;
-  deathTint += ((game.status === "over" ? 1 : 0) - deathTint) * (1 - Math.exp(-dt * 5));
-
-  updateSnake(alpha, dt);
-  updateCoin(dt);
   updateParticles(dt);
   updateCamera(dt);
-  updateArrow();
   world.update(time, dt);
 
   composer.render();
@@ -412,9 +743,15 @@ function updateSnake(alpha: number, dt: number): void {
   headYaw += diff * (1 - Math.exp(-dt * 18));
   head.rotation.y = headYaw;
   headMat.color.copy(HEAD_ALIVE).lerp(DEAD, deathTint * 0.8);
+  // Пощада у стены: голова мигает — пора поворачивать
+  if (game.stalled && game.status === "running") headMat.color.lerp(WARNING, 0.5 + 0.5 * Math.sin(time * 30));
 }
 
 function updateCoin(dt: number): void {
+  const active = game.status !== "won";
+  coin.visible = coinLight.visible = beam.visible = active;
+  if (!active) return;
+
   const key = `${game.food.x},${game.food.y}`;
   if (key !== foodKey) {
     foodKey = key;
@@ -478,24 +815,45 @@ function updateParticles(dt: number): void {
 }
 
 function updateCamera(dt: number): void {
-  // Курс камеры догоняет курс головы медленнее, чем сама голова, — поворот ощущается плавным
-  let diff = headYaw - camYaw;
-  diff = Math.atan2(Math.sin(diff), Math.cos(diff));
-  camYaw += diff * (1 - Math.exp(-dt * 3));
-  camFwd.set(Math.sin(camYaw), 0, Math.cos(camYaw));
+  let smoothTime: number;
+  transition = Math.max(0, transition - dt);
 
-  camGoal.copy(positions[0]).setY(0).addScaledVector(camFwd, -CAM_BACK).setY(CAM_UP);
-  lookGoal.copy(positions[0]).setY(0).addScaledVector(camFwd, LOOK_AHEAD);
-  if (!camReady) {
-    camPos.copy(camGoal);
-    camLook.copy(lookGoal);
-    camReady = true;
+  if (mode === "play" && settings.camera === "classic") {
+    // Фокус догоняет голову, только когда она выходит из мёртвой зоны
+    tmpA.copy(positions[0]).multiplyScalar(CLASSIC_FOLLOW).setY(0);
+    const d = tmpA.distanceTo(camFocus);
+    if (d > DEAD_ZONE) camFocus.lerp(tmpA, (d - DEAD_ZONE) / d);
+    camGoal.copy(camFocus).add(CLASSIC_OFFSET);
+    lookGoal.copy(camFocus);
+    smoothTime = 0.5;
+  } else if (mode === "play") {
+    // Курс берём с учётом очереди: камера начинает поворот в момент нажатия
+    const yawTarget = Math.atan2(...DIR_VEC[game.heading]);
+    let diff = yawTarget - camYaw;
+    diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+    camYaw = smoothDamp(camYaw, camYaw + diff, yawVel, CHASE_YAW_TIME, dt, CHASE_MAX_YAW_SPEED);
+
+    // Позицию считаем из сглаженных курса и фокуса, а не сглаживаем в мире:
+    // при повороте камера идёт по дуге вокруг головы и не «срезает угол»
+    tmpA.copy(positions[0]).setY(0);
+    smoothDampVec(camFocus, tmpA, camFocusVel, CHASE_FOLLOW_TIME, dt);
+    camFwd.set(Math.sin(camYaw), 0, Math.cos(camYaw));
+    camGoal.copy(camFocus).addScaledVector(camFwd, -CHASE_BACK).setY(CHASE_UP);
+    lookGoal.copy(camFocus).addScaledVector(camFwd, CHASE_LOOK_AHEAD);
+    // Плавный въезд из меню, дальше — почти жёсткая привязка
+    smoothTime = Math.max(0.02, transition * 0.5);
+  } else {
+    // Меню и титры: медленный облёт острова
+    const a = time * 0.05;
+    camGoal.set(Math.sin(a) * 30, 14, Math.cos(a) * 30);
+    lookGoal.set(0, -1, 0);
+    smoothTime = 1.2;
   }
-  const k = 1 - Math.exp(-dt * 6);
-  camPos.lerp(camGoal, k);
-  camLook.lerp(lookGoal, k);
 
-  shake *= Math.exp(-dt * 6);
+  smoothDampVec(camPos, camGoal, camPosVel, smoothTime, dt);
+  smoothDampVec(camLook, lookGoal, camLookVel, smoothTime, dt);
+
+  shake *= Math.exp(-dt * 8);
   camera.position.copy(camPos).add(tmpA.set((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake, 0));
   camera.lookAt(camLook);
 }
@@ -503,64 +861,12 @@ function updateCamera(dt: number): void {
 function updateArrow(): void {
   tmpA.copy(coin.position).sub(head.position).setY(0);
   const dist = tmpA.length();
-  arrow.visible = dist > 2.5 && game.status !== "over";
+  arrow.visible = dist > 2.5 && game.status !== "over" && game.status !== "won";
   if (!arrow.visible) return;
   tmpA.divideScalar(dist);
   arrow.position.copy(head.position).addScaledVector(tmpA, 0.9).setY(head.position.y + 0.95 + Math.sin(time * 5) * 0.06);
   arrow.rotation.y = Math.atan2(tmpA.x, tmpA.z);
 }
 
-function onGameOver(): void {
-  prev = clonePoints(game.snake);
-  acc = 0;
-  shake = 0.7;
-  if (game.score > best) {
-    best = game.score;
-    saveBest(best);
-  }
-  updateUi();
-}
-
-function updateUi(): void {
-  scoreEl.textContent = String(game.score);
-  bestEl.textContent = String(Math.max(best, game.score));
-
-  const show = (title: string, text: string) => {
-    overlayTitle.textContent = title;
-    overlayText.textContent = text;
-    overlay.classList.remove("hidden");
-  };
-
-  switch (game.status) {
-    case "ready":
-      show("Змейка", "↑ — старт, ← → — поворот");
-      break;
-    case "paused":
-      show("Пауза", "Пробел — продолжить");
-      break;
-    case "over":
-      show("Игра окончена", `Счёт: ${game.score}. Enter — заново`);
-      break;
-    default:
-      overlay.classList.add("hidden");
-  }
-}
-
-function loadBest(): number {
-  try {
-    return Number(localStorage.getItem(BEST_KEY)) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-function saveBest(value: number): void {
-  try {
-    localStorage.setItem(BEST_KEY, String(value));
-  } catch {
-    // рекорд просто не сохранится
-  }
-}
-
-updateUi();
+openMenu();
 requestAnimationFrame(frame);

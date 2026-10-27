@@ -1,20 +1,23 @@
 {
   "name": "snake",
-  "version": "2.0.0",
-  "description": "Snake game for Windows (Electron + TypeScript)",
+  "version": "3.0.0",
+  "description": "Змейка 3D для Windows, macOS и браузера (Electron + Three.js + TypeScript)",
   "main": "dist/main.js",
   "author": "Andrey",
   "license": "MIT",
   "scripts": {
-    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && esbuild src/renderer/app.ts --bundle --minify --format=iife --target=chrome128 --outfile=dist/renderer/app.js && node scripts/copy-static.js",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && esbuild src/renderer/app.ts --bundle --minify --format=iife --target=chrome128,safari16,firefox115 --outfile=dist/renderer/app.js && node scripts/copy-static.js",
     "start": "npm run build && electron .",
-    "dist": "npm run build && electron-builder --win"
+    "dist": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "icon": "electron scripts/make-icon.js"
   },
   "devDependencies": {
     "@types/three": "^0.170.0",
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
     "esbuild": "^0.24.0",
+    "rcedit": "^4.0.1",
     "three": "^0.170.0",
     "typescript": "^5.6.3"
   },
@@ -26,9 +29,12 @@
       "package.json"
     ],
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build"
     },
+    "afterPack": "scripts/after-pack.js",
     "win": {
+      "icon": "build/icon.ico",
       "signAndEditExecutable": false,
       "target": [
         "nsis",
@@ -37,7 +43,30 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "artifactName": "Snake-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Snake-${version}-portable.${ext}"
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "category": "public.app-category.arcade-games",
+      "identity": null,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "artifactName": "Snake-${version}-mac-${arch}.${ext}"
     }
   }
 }

@@ -24,6 +24,17 @@ canvas {
   display: block;
 }
 
+.hidden {
+  display: none !important;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+/* ---------- HUD ---------- */
+
 #hud {
   position: fixed;
   top: 18px;
@@ -31,6 +42,7 @@ canvas {
   right: 22px;
   display: flex;
   justify-content: space-between;
+  align-items: center;
   pointer-events: none;
 }
 
@@ -51,16 +63,21 @@ canvas {
   text-shadow: 0 2px 0 rgba(0, 0, 0, 0.35);
 }
 
-.pill .label {
-  padding-left: 10px;
-  font-size: 13px;
+.pill .of {
+  font-size: 18px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  opacity: 0.85;
+  opacity: 0.8;
+}
+
+.level-pill {
+  padding: 8px 22px;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
 }
 
 .coin {
+  flex: none;
   width: 28px;
   height: 28px;
   border-radius: 50%;
@@ -68,41 +85,40 @@ canvas {
   box-shadow: inset 0 0 0 3px #f5a300;
 }
 
-#overlay {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(10, 40, 90, 0.18);
+.coin.small {
+  width: 16px;
+  height: 16px;
+  box-shadow: inset 0 0 0 2px #f5a300;
 }
 
-#overlay.hidden {
-  display: none;
+.clock {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 3px solid #fff;
+  position: relative;
 }
 
-.card {
-  padding: 26px 44px 30px;
-  border-radius: 28px;
-  background: rgba(255, 255, 255, 0.92);
-  color: #1d2b4a;
-  text-align: center;
-  box-shadow: 0 16px 40px rgba(10, 30, 80, 0.3);
+.clock::before,
+.clock::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 50%;
+  width: 3px;
+  background: #fff;
+  border-radius: 2px;
+  transform-origin: bottom center;
 }
 
-.card h2 {
-  margin: 0 0 8px;
-  font-size: 42px;
-  font-weight: 900;
-  color: #e8343a;
-  text-shadow: 0 3px 0 #ffd23f;
+.clock::before {
+  height: 8px;
+  transform: translateX(-50%);
 }
 
-.card p {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 600;
-  color: #3b4a6b;
+.clock::after {
+  height: 6px;
+  transform: translateX(-50%) rotate(90deg);
 }
 
 footer {
@@ -116,4 +132,451 @@ footer {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
   opacity: 0.9;
   pointer-events: none;
+}
+
+/* ---------- Экраны ---------- */
+
+.screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.hint {
+  margin: 18px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0.85;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.logo {
+  margin: 0;
+  font-size: 64px;
+  font-weight: 900;
+  letter-spacing: -0.01em;
+  color: #fff;
+  text-shadow: 0 4px 0 #2f9d4a, 0 10px 24px rgba(0, 0, 0, 0.3);
+}
+
+.logo span {
+  color: #ffd23f;
+  text-shadow: 0 4px 0 #e08a00, 0 10px 24px rgba(0, 0, 0, 0.3);
+}
+
+/* ---------- Меню ---------- */
+
+#menu {
+  background: linear-gradient(to bottom, rgba(10, 30, 70, 0.05), rgba(10, 30, 70, 0.55));
+}
+
+.tagline {
+  margin: 4px 0 26px;
+  font-size: 18px;
+  font-weight: 700;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.levels {
+  display: flex;
+  gap: 14px;
+  padding: 0 20px;
+}
+
+.level-card {
+  width: 188px;
+  min-height: 236px;
+  padding: 16px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  text-align: left;
+  border: none;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.93);
+  color: #1d2b4a;
+  box-shadow: 0 10px 26px rgba(10, 30, 80, 0.25);
+  outline: 4px solid transparent;
+  transition: transform 0.15s ease, outline-color 0.15s ease;
+}
+
+.level-card.selected {
+  transform: translateY(-8px) scale(1.03);
+  outline-color: #ffd23f;
+}
+
+.level-card.locked {
+  cursor: default;
+  opacity: 0.6;
+  filter: grayscale(0.7);
+}
+
+.level-num {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-size: 20px;
+  font-weight: 900;
+  color: #fff;
+  background: #3fae3a;
+}
+
+.level-card[data-theme="afternoon"] .level-num {
+  background: #f0a020;
+}
+
+.level-card[data-theme="sunset"] .level-num {
+  background: #ff6b4a;
+}
+
+.level-card[data-theme="night"] .level-num {
+  background: #5a5ad6;
+}
+
+.level-name {
+  margin-top: 4px;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1.15;
+}
+
+.level-desc {
+  font-size: 13px;
+  line-height: 1.35;
+  color: #4a587a;
+}
+
+.level-goal {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #4a587a;
+}
+
+.level-status {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 8px;
+  border-top: 1px solid #e3e8f2;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.level-time {
+  font-variant-numeric: tabular-nums;
+  color: #1d2b4a;
+}
+
+.level-new {
+  color: #2f9d4a;
+}
+
+.level-lock {
+  color: #6b7590;
+}
+
+.stars {
+  display: inline-flex;
+  gap: 2px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.star {
+  color: #c9d3e6;
+}
+
+.star.on {
+  color: #ffc928;
+  text-shadow: 0 1px 0 #e08a00;
+}
+
+.stars.big {
+  gap: 8px;
+  font-size: 54px;
+}
+
+.stars.big .star.on {
+  text-shadow: 0 3px 0 #e08a00, 0 0 18px rgba(255, 200, 40, 0.6);
+}
+
+.menu-actions {
+  margin-top: 26px;
+  display: flex;
+  gap: 12px;
+}
+
+/* ---------- Кнопки ---------- */
+
+.menu-actions button,
+.actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 22px;
+  border-radius: 999px;
+  border: 2px solid #d6def0;
+  background: #fff;
+  color: #1d2b4a;
+  font-weight: 800;
+  font-size: 16px;
+  white-space: nowrap;
+  box-shadow: 0 3px 0 #c3cde3;
+}
+
+.menu-actions button.primary,
+.actions button.primary {
+  background: #ffcc33;
+  border-color: #e0a800;
+  box-shadow: 0 3px 0 #c98f00;
+}
+
+.menu-actions button.ghost {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.5);
+  color: #fff;
+  box-shadow: none;
+}
+
+.menu-actions button:hover,
+.actions button:hover {
+  transform: translateY(-1px);
+}
+
+kbd {
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: rgba(29, 43, 74, 0.1);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* ---------- Диалог ---------- */
+
+#dialog {
+  background: rgba(10, 40, 90, 0.18);
+}
+
+.card {
+  min-width: 380px;
+  max-width: 520px;
+  padding: 24px 40px 28px;
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #1d2b4a;
+  text-align: center;
+  box-shadow: 0 16px 40px rgba(10, 30, 80, 0.3);
+}
+
+.kicker {
+  margin: 0 0 2px;
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #6b7590;
+}
+
+.card h2 {
+  margin: 0 0 10px;
+  font-size: 40px;
+  font-weight: 900;
+  color: #2b7de0;
+  text-shadow: 0 3px 0 #ffd23f;
+}
+
+#dialog.win .card h2 {
+  color: #2f9d4a;
+}
+
+#dialog.lose .card h2 {
+  color: #e8343a;
+}
+
+.dialog-body p {
+  margin: 4px 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: #3b4a6b;
+}
+
+.dialog-body .stars {
+  margin: 4px 0 8px;
+}
+
+.record {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: #ffe9a8;
+  color: #9a6400;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.actions {
+  margin-top: 20px;
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+/* ---------- Титры ---------- */
+
+#credits {
+  overflow: hidden;
+  justify-content: flex-end;
+  background: radial-gradient(ellipse at center, rgba(5, 10, 30, 0.35), rgba(5, 10, 30, 0.75));
+}
+
+.credits-roll {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  text-align: center;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  transform: translateY(100vh);
+}
+
+.credits-roll.rolling {
+  animation: credits-roll 60s linear forwards;
+}
+
+@keyframes credits-roll {
+  from {
+    transform: translateY(100vh);
+  }
+  to {
+    transform: translateY(-100%);
+  }
+}
+
+.credits-roll .logo {
+  margin-bottom: 60px;
+}
+
+.credits-roll section {
+  margin: 0 auto 64px;
+  max-width: 640px;
+}
+
+.credits-roll h3 {
+  margin: 0 0 18px;
+  font-size: 15px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: #ffd23f;
+}
+
+.credit-line {
+  margin-bottom: 16px;
+}
+
+.credit-line b {
+  display: block;
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.credit-line span {
+  font-size: 15px;
+  opacity: 0.8;
+}
+
+.credits-thanks {
+  margin: 40px 0 0;
+  padding-bottom: 40vh;
+  font-size: 42px;
+  font-weight: 900;
+  color: #ffd23f;
+}
+
+.credits-hint {
+  position: relative;
+  margin-bottom: 14px;
+}
+
+/* ---------- Узкие экраны (веб-версия на планшете или телефоне) ---------- */
+
+@media (max-width: 1040px) {
+  #menu {
+    justify-content: flex-start;
+    padding: 24px 12px;
+    overflow-y: auto;
+  }
+
+  .logo {
+    font-size: 44px;
+  }
+
+  .levels {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .level-card {
+    width: 168px;
+    min-height: 210px;
+  }
+
+  .menu-actions {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .card {
+    min-width: 0;
+    width: calc(100% - 32px);
+    padding: 20px 18px 22px;
+  }
+
+  .card h2 {
+    font-size: 30px;
+  }
+
+  .actions {
+    flex-wrap: wrap;
+  }
+
+  #hud {
+    top: 10px;
+    left: 10px;
+    right: 10px;
+  }
+
+  .level-pill {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .levels {
+    gap: 10px;
+    padding: 0;
+  }
+
+  .level-card {
+    width: calc(50% - 5px);
+    min-height: 190px;
+    padding: 12px;
+  }
+
+  .level-desc {
+    font-size: 12px;
+  }
 }
