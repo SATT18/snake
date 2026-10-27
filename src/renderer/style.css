@@ -14,6 +14,20 @@ body {
   color: #fff;
   font-family: "Segoe UI", system-ui, sans-serif;
   user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+canvas,
+#hud {
+  touch-action: none; /* свайпы управляют змейкой, а не прокручивают страницу */
+}
+
+/* На сенсорных экранах подсказки по клавишам не нужны */
+body.touch kbd,
+body.touch .keyboard-only {
+  display: none;
 }
 
 canvas {
@@ -67,6 +81,29 @@ button {
   font-size: 18px;
   font-weight: 700;
   opacity: 0.8;
+}
+
+.hud-right {
+  display: flex;
+  gap: 10px;
+}
+
+.pause-button {
+  pointer-events: auto;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  justify-content: center;
+  gap: 6px;
+  border: none;
+  color: inherit;
+}
+
+.pause-button span {
+  width: 5px;
+  height: 16px;
+  border-radius: 2px;
+  background: #fff;
 }
 
 .level-pill {

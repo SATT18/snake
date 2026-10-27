@@ -2,10 +2,16 @@
 // горы на горизонте, облака, птицы и воздушные шары.
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
+import { bakeStatic, markDynamic } from "./batch.js";
 import type { Obstacle } from "./levels.js";
 import type { Theme } from "./themes.js";
 
 export const TILE_TOP = 0.1; // высота верхней грани плиток поля
+
+/** Центр клетки поля в мировых координатах (y = 0). */
+export function cellToWorld(x: number, y: number, cols: number, rows: number, out: THREE.Vector3): THREE.Vector3 {
+  return out.set(x - cols / 2 + 0.5, 0, y - rows / 2 + 0.5);
+}
 
 const OCEAN_Y = -7;
 const GROUND_Y = -0.02; // верх травяного края острова вокруг поля
@@ -14,6 +20,14 @@ export interface World {
   update(time: number, dt: number): void;
   setTheme(theme: Theme): void;
   setObstacles(obstacles: Obstacle[]): void;
+  /** Доля травинок и цветов, 0..1 — для слабых устройств. */
+  setDetail(density: number): void;
+}
+
+/** Мелкие инстансы (трава, цветы), количество которых можно уменьшать. */
+function markDetail(mesh: THREE.InstancedMesh): THREE.InstancedMesh {
+  mesh.userData.detailTotal = mesh.count;
+  return mesh;
 }
 
 type Updater = (time: number, dt: number) => void;
@@ -50,7 +64,9 @@ function mesh(geo: THREE.BufferGeometry, material: THREE.Material, x = 0, y = 0,
   return m;
 }
 
-const SPHERE = new THREE.SphereGeometry(1, 20, 14);
+// Умеренная детализация: для мультяшных крон и облаков 14×10 сегментов достаточно
+const SPHERE = new THREE.SphereGeometry(1, 14, 10);
+const HEDGE_GEO = new RoundedBoxGeometry(1.02, 0.8, 1.02, 2, 0.34);
 const LEAF_COLORS = [0x3fae3a, 0x4cbb3f, 0x2f9d4a, 0x6cc644, 0xff9ccf, 0xffb238, 0xff7a3a];
 const FLOWER_COLORS = [0xff5c8a, 0xffd23f, 0xffffff, 0xb36bff, 0xff8a3d, 0x5cc8ff];
 
@@ -123,19 +139,34 @@ export function createWorld(scene: THREE.Scene, cols: number, rows: number): Wor
   scene.add(ocean.mesh);
   updaters.push(ocean.update);
 
-  scene.add(createIsland(islandHalf));
-  scene.add(createHedges(cols, rows));
-  scene.add(createGrass(cols, rows, islandHalf));
-  scene.add(createRing(cols, rows, islandHalf));
-  createIslets(scene, updaters);
-  scene.add(createMountains());
+  // Всё неподвижное собираем в один корень и запекаем: сотни мешей → по одному на материал
+  const staticRoot = new THREE.Group();
+  staticRoot.add(
+    createBoard(cols, rows),
+    createIsland(islandHalf),
+    createHedges(cols, rows),
+    createGrass(cols, rows, islandHalf),
+    createRing(cols, rows, islandHalf),
+    createMountains(),
+  );
+  createIslets(staticRoot, updaters);
+  const baked = bakeStatic(staticRoot);
+  scene.add(baked);
   createSkyLife(scene, updaters);
+
+  const detailMeshes: THREE.InstancedMesh[] = [];
+  baked.traverse((o) => {
+    if (o instanceof THREE.InstancedMesh && o.userData.detailTotal) detailMeshes.push(o);
+  });
 
   let obstacleGroup: THREE.Group | null = null;
 
   return {
     update(time, dt) {
       for (const u of updaters) u(time, dt);
+    },
+    setDetail(density) {
+      for (const mesh of detailMeshes) mesh.count = Math.round(mesh.userData.detailTotal * density);
     },
     setTheme(theme) {
       const u = skyMaterial.uniforms;
@@ -199,7 +230,6 @@ function createStars(): THREE.Points {
 
 // ---------- Препятствия уровня ----------
 
-const OBSTACLE_HEDGE_GEO = new RoundedBoxGeometry(1.02, 0.8, 1.02, 3, 0.34);
 const OBSTACLE_ROCK_GEO = new THREE.DodecahedronGeometry(0.45, 0);
 
 /** Псевдослучайное число от координат клетки: препятствие выглядит одинаково при каждой загрузке. */
@@ -221,7 +251,7 @@ function createObstacles(obstacles: Obstacle[], cols: number, rows: number): THR
   const base = TILE_TOP - 0.02;
 
   if (hedges.length) {
-    const mesh = new THREE.InstancedMesh(OBSTACLE_HEDGE_GEO, new THREE.MeshStandardMaterial({ roughness: 0.95 }), hedges.length);
+    const mesh = new THREE.InstancedMesh(HEDGE_GEO,new THREE.MeshStandardMaterial({ roughness: 0.95 }), hedges.length);
     mesh.castShadow = mesh.receiveShadow = true;
     hedges.forEach((o, i) => {
       const h = 0.8 + cellNoise(o.x, o.y, 1) * 0.25;
@@ -253,29 +283,61 @@ function createObstacles(obstacles: Obstacle[], cols: number, rows: number): THR
   return g;
 }
 
+/**
+ * Океан с волнами в вершинном шейдере: высота и нормаль считаются на GPU,
+ * а не пересчитываются на CPU для каждой вершины каждый кадр.
+ */
 function createOcean(): { mesh: THREE.Mesh; update: Updater } {
-  const geometry = new THREE.PlaneGeometry(520, 520, 90, 90);
+  const geometry = new THREE.PlaneGeometry(520, 520, 64, 64);
   geometry.rotateX(-Math.PI / 2);
-  const mesh = new THREE.Mesh(
-    geometry,
-    new THREE.MeshStandardMaterial({ color: 0x1c8be0, roughness: 0.12, metalness: 0.05 }),
-  );
+  const material = new THREE.MeshStandardMaterial({ color: 0x1c8be0, roughness: 0.12, metalness: 0.05 });
+  const uTime = { value: 0 };
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = uTime;
+    shader.vertexShader = `uniform float uTime;\n${shader.vertexShader}`
+      .replace(
+        "#include <beginnormal_vertex>",
+        /* glsl */ `
+        // Производные волны y = 0.35·sin(0.11x + 0.9t) + 0.35·cos(0.09z + 0.7t)
+        float dydx = 0.35 * 0.11 * cos(position.x * 0.11 + uTime * 0.9);
+        float dydz = -0.35 * 0.09 * sin(position.z * 0.09 + uTime * 0.7);
+        vec3 objectNormal = normalize(vec3(-dydx, 1.0, -dydz));
+        #ifdef USE_TANGENT
+          vec3 objectTangent = vec3(tangent.xyz);
+        #endif`,
+      )
+      .replace(
+        "#include <begin_vertex>",
+        /* glsl */ `
+        vec3 transformed = vec3(position);
+        transformed.y += sin(position.x * 0.11 + uTime * 0.9) * 0.35 + cos(position.z * 0.09 + uTime * 0.7) * 0.35;`,
+      );
+  };
+  const mesh = new THREE.Mesh(geometry, material);
   mesh.position.y = OCEAN_Y;
   mesh.receiveShadow = true;
+  return { mesh, update: (time) => (uTime.value = time) };
+}
 
-  const pos = geometry.attributes.position as THREE.BufferAttribute;
-  return {
-    mesh,
-    update(time) {
-      for (let i = 0; i < pos.count; i++) {
-        const x = pos.getX(i);
-        const z = pos.getZ(i);
-        pos.setY(i, Math.sin(x * 0.11 + time * 0.9) * 0.35 + Math.cos(z * 0.09 + time * 0.7) * 0.35);
-      }
-      pos.needsUpdate = true;
-      geometry.computeVertexNormals();
-    },
-  };
+/** Игровое поле: плитки в шахматном порядке. */
+function createBoard(cols: number, rows: number): THREE.InstancedMesh {
+  const tiles = new THREE.InstancedMesh(
+    new RoundedBoxGeometry(0.96, 0.12, 0.96, 1, 0.04),
+    new THREE.MeshStandardMaterial({ roughness: 0.8 }),
+    cols * rows,
+  );
+  tiles.receiveShadow = true;
+  const m = new THREE.Matrix4();
+  const c = new THREE.Color();
+  let k = 0;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      tiles.setMatrixAt(k, m.makeTranslation(x - cols / 2 + 0.5, TILE_TOP - 0.06, y - rows / 2 + 0.5));
+      tiles.setColorAt(k, c.set((x + y) % 2 ? 0x7fd34e : 0x6cc340));
+      k++;
+    }
+  }
+  return tiles;
 }
 
 // ---------- Главный остров ----------
@@ -285,9 +347,9 @@ function createIsland(half: number): THREE.Group {
   const g = new THREE.Group();
   const w = half * 2;
   g.add(
-    mesh(new RoundedBoxGeometry(w, 0.5, w, 4, 0.25), grassMat, 0, GROUND_Y - 0.25),
-    mesh(new RoundedBoxGeometry(w - 0.6, 2, w - 0.6, 4, 0.4), dirtMat, 0, -1.5),
-    mesh(new RoundedBoxGeometry(w - 1.4, 1.2, w - 1.4, 4, 0.4), darkDirtMat, 0, -3),
+    mesh(new RoundedBoxGeometry(w, 0.5, w, 2, 0.25), grassMat, 0, GROUND_Y - 0.25),
+    mesh(new RoundedBoxGeometry(w - 0.6, 2, w - 0.6, 2, 0.4), dirtMat, 0, -1.5),
+    mesh(new RoundedBoxGeometry(w - 1.4, 1.2, w - 1.4, 2, 0.4), darkDirtMat, 0, -3),
   );
   const root = mesh(new THREE.CylinderGeometry((w - 2) / Math.SQRT2, 3, 2.6, 4), rockMat, 0, -4.9);
   root.rotation.y = Math.PI / 4;
@@ -301,11 +363,7 @@ function createHedges(cols: number, rows: number): THREE.Group {
   for (let x = -1; x <= cols; x++) cells.push([x, -1], [x, rows]);
   for (let y = 0; y < rows; y++) cells.push([-1, y], [cols, y]);
 
-  const hedges = new THREE.InstancedMesh(
-    new RoundedBoxGeometry(1.02, 0.8, 1.02, 3, 0.34),
-    new THREE.MeshStandardMaterial({ roughness: 0.95 }),
-    cells.length,
-  );
+  const hedges = new THREE.InstancedMesh(HEDGE_GEO, new THREE.MeshStandardMaterial({ roughness: 0.95 }), cells.length);
   hedges.castShadow = true;
   hedges.receiveShadow = true;
 
@@ -325,7 +383,7 @@ function createHedges(cols: number, rows: number): THREE.Group {
   });
 
   const g = new THREE.Group();
-  g.add(hedges, createFlowerHeads(flowers));
+  g.add(hedges, markDetail(createFlowerHeads(flowers)));
   return g;
 }
 
@@ -343,6 +401,11 @@ function createGrass(cols: number, rows: number, half: number): THREE.InstancedM
     const z = range(-half + 0.3, half - 0.3);
     if (Math.max(Math.abs(x), Math.abs(z)) > inner) spots.push(new THREE.Vector3(x, GROUND_Y, z));
   }
+  // Перемешиваем, чтобы при уменьшении count трава редела равномерно, а не пропадала целыми участками
+  for (let i = spots.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [spots[i], spots[j]] = [spots[j], spots[i]];
+  }
 
   const grass = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ roughness: 0.9 }), spots.length);
   grass.receiveShadow = true;
@@ -357,7 +420,7 @@ function createGrass(cols: number, rows: number, half: number): THREE.InstancedM
     grass.setMatrixAt(i, m.compose(p, q, s));
     grass.setColorAt(i, c.setHSL(range(0.25, 0.32), range(0.6, 0.75), range(0.3, 0.45)));
   });
-  return grass;
+  return markDetail(grass);
 }
 
 /** Полоса земли между изгородью и краем острова: деревья, кусты, камни, грибы, цветы. */
@@ -507,7 +570,7 @@ function createFlowers(spots: THREE.Vector3[]): THREE.Group {
   const m = new THREE.Matrix4();
   spots.forEach((p, i) => stems.setMatrixAt(i, m.makeTranslation(p.x, p.y, p.z)));
   const g = new THREE.Group();
-  g.add(stems, createFlowerHeads(spots.map((p) => p.clone().setY(p.y + 0.26))));
+  g.add(markDetail(stems), markDetail(createFlowerHeads(spots.map((p) => p.clone().setY(p.y + 0.26)))));
   return g;
 }
 
@@ -519,7 +582,7 @@ function createWindmill(): { group: THREE.Group; update: Updater } {
   g.add(mesh(new THREE.ConeGeometry(0.95, 1.3, 10), mat(0xd6453d, { roughness: 0.6 }), 0, 4.65));
   g.add(mesh(new THREE.BoxGeometry(0.6, 1, 0.1), mat(0x7a4a24), 0, 0.5, 1.02));
 
-  const blades = new THREE.Group();
+  const blades = markDynamic(new THREE.Group()); // вращается — не запекаем
   blades.position.set(0, 3.9, 0.95);
   const wood = mat(0xc8a06a);
   const sail = mat(0xfff8ec, { side: THREE.DoubleSide });
@@ -624,7 +687,7 @@ function createWaterfall(size: number, isletY: number): THREE.Group {
 
 type IsletKind = "windmill" | "forest" | "house" | "mushrooms" | "lighthouse" | "rocks";
 
-function createIslets(scene: THREE.Scene, updaters: Updater[]): void {
+function createIslets(root: THREE.Group, updaters: Updater[]): void {
   const specs: { angle: number; dist: number; y: number; size: number; kind: IsletKind; fall?: boolean }[] = [
     { angle: 0.25, dist: 27, y: -1, size: 8, kind: "windmill", fall: true },
     { angle: 1.0, dist: 33, y: 2, size: 6, kind: "forest" },
@@ -639,8 +702,8 @@ function createIslets(scene: THREE.Scene, updaters: Updater[]): void {
   for (const spec of specs) {
     const g = new THREE.Group();
     const { size } = spec;
-    g.add(mesh(new RoundedBoxGeometry(size, 0.6, size, 3, 0.25), grassMat));
-    g.add(mesh(new RoundedBoxGeometry(size - 0.3, 1.2, size - 0.3, 3, 0.3), dirtMat, 0, -0.9));
+    g.add(mesh(new RoundedBoxGeometry(size, 0.6, size, 2, 0.25), grassMat));
+    g.add(mesh(new RoundedBoxGeometry(size - 0.3, 1.2, size - 0.3, 2, 0.3), dirtMat, 0, -0.9));
     const root = mesh(new THREE.CylinderGeometry((size - 0.6) / Math.SQRT2, 0.4, size * 0.8, 4), rockMat, 0, -1.5 - size * 0.4);
     root.rotation.y = Math.PI / 4;
     g.add(root);
@@ -699,7 +762,7 @@ function createIslets(scene: THREE.Scene, updaters: Updater[]): void {
       g.add(fall);
     }
     g.position.set(x, spec.y, z);
-    scene.add(g);
+    root.add(g);
   }
 
   if (waterTexture) {
@@ -786,14 +849,14 @@ function createBalloon(color: number): THREE.Group {
 }
 
 function createSkyLife(scene: THREE.Scene, updaters: Updater[]): void {
-  const clouds = new THREE.Group();
+  const cloudParts = new THREE.Group();
   for (let i = 0; i < 18; i++) {
     const a = range(0, Math.PI * 2);
     const d = range(55, 140);
     const cloud = createCloud(range(2, 5));
     cloud.position.set(Math.sin(a) * d, range(12, 40), Math.cos(a) * d);
     cloud.rotation.y = range(0, Math.PI * 2);
-    clouds.add(cloud);
+    cloudParts.add(cloud);
   }
   // Низкие облака под островами
   for (let i = 0; i < 6; i++) {
@@ -801,8 +864,10 @@ function createSkyLife(scene: THREE.Scene, updaters: Updater[]): void {
     const d = range(24, 45);
     const cloud = createCloud(range(1.8, 2.8));
     cloud.position.set(Math.sin(a) * d, range(-6, -3), Math.cos(a) * d);
-    clouds.add(cloud);
+    cloudParts.add(cloud);
   }
+  // Все облака — один меш, который медленно вращается целиком
+  const clouds = bakeStatic(cloudParts);
   scene.add(clouds);
   updaters.push((_t, dt) => (clouds.rotation.y += dt * 0.008));
 
@@ -828,7 +893,7 @@ function createSkyLife(scene: THREE.Scene, updaters: Updater[]): void {
 
   const balloonColors = [0xff4d4d, 0xffc928, 0x9c4dff, 0x26c6da];
   balloonColors.forEach((color, i) => {
-    const balloon = createBalloon(color);
+    const balloon = bakeStatic(createBalloon(color)); // 8 мешей → 4
     const a = (i / balloonColors.length) * Math.PI * 2 + 0.6;
     const d = range(50, 80);
     const y = range(14, 26);

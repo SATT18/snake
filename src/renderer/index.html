@@ -14,7 +14,10 @@
     <div id="hud" class="hidden">
       <div class="pill"><span class="coin"></span><b id="coins">0</b><span class="of">/ <span id="goal">0</span></span></div>
       <div class="pill level-pill"><span id="level-name"></span></div>
-      <div class="pill"><span class="clock"></span><b id="timer">0:00</b></div>
+      <div class="hud-right">
+        <div class="pill"><span class="clock"></span><b id="timer">0:00</b></div>
+        <button id="btn-pause" class="pill pause-button" aria-label="Пауза"><span></span><span></span></button>
+      </div>
     </div>
 
     <div id="menu" class="screen hidden">
@@ -25,9 +28,10 @@
         <button id="btn-credits" class="primary">Титры</button>
         <button id="btn-camera" class="ghost"></button>
         <button id="btn-shake" class="ghost"></button>
+        <button id="btn-quality" class="ghost"></button>
         <button id="btn-reset" class="ghost">Сбросить прогресс</button>
       </div>
-      <p class="hint">← → — выбрать уровень · Enter — играть · C — режим камеры</p>
+      <p class="hint keyboard-only">← → — выбрать уровень · Enter — играть · C — режим камеры</p>
     </div>
 
     <div id="dialog" class="screen hidden">

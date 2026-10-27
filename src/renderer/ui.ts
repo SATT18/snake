@@ -1,7 +1,13 @@
 // HTML-интерфейс поверх 3D-сцены: HUD, меню уровней, диалоги и титры.
+import { isTouchDevice } from "./input.js";
 import type { LevelDef } from "./levels.js";
 import type { Progress } from "./progress.js";
+import { QUALITY_LABELS } from "./quality.js";
 import type { CameraMode, Settings } from "./settings.js";
+
+const touch = isTouchDevice();
+// На сенсорных экранах прячем подсказки по клавишам
+document.body.classList.toggle("touch", touch);
 
 const byId = (id: string) => document.getElementById(id)!;
 
@@ -36,14 +42,18 @@ const levelNameEl = byId("level-name");
 const timerEl = byId("timer");
 let hudKey = "";
 
-/** Подсказка по управлению зависит от режима камеры. */
+const pauseButton = byId("btn-pause");
+
+/** Подсказка по управлению зависит от режима камеры и устройства. */
 export function turnHint(camera: CameraMode): string {
+  if (touch) return camera === "classic" ? "Свайп — направление" : "Свайп влево / вправо — поворот";
   return camera === "classic" ? "Стрелки / WASD — направление" : "← → / A D — повернуть";
 }
 
-export function showHud(level: LevelDef, index: number, camera: CameraMode): void {
+export function showHud(level: LevelDef, index: number, camera: CameraMode, onPause: () => void): void {
   levelNameEl.textContent = `${index + 1}. ${level.name}`;
-  controlsHint.textContent = `${turnHint(camera)} · Пробел — пауза · Esc — меню`;
+  controlsHint.textContent = touch ? turnHint(camera) : `${turnHint(camera)} · Пробел — пауза · Esc — меню`;
+  pauseButton.onclick = onPause;
   goalEl.textContent = String(level.goal);
   hudKey = "";
   hud.classList.remove("hidden");
@@ -127,6 +137,7 @@ export interface MenuHandlers {
   onReset(): void;
   onToggleCamera(): void;
   onToggleShake(): void;
+  onCycleQuality(): void;
 }
 
 const menu = byId("menu");
@@ -135,10 +146,12 @@ const creditsButton = byId("btn-credits");
 const resetButton = byId("btn-reset");
 const cameraButton = byId("btn-camera");
 const shakeButton = byId("btn-shake");
+const qualityButton = byId("btn-quality");
 
 export function showSettings(settings: Settings): void {
   cameraButton.textContent = `Камера: ${settings.camera === "classic" ? "классическая" : "за спиной"}`;
   shakeButton.textContent = `Тряска: ${settings.shake ? "вкл" : "выкл"}`;
+  qualityButton.textContent = `Графика: ${QUALITY_LABELS[settings.quality]}`;
 }
 let menuState: { unlocked: boolean[]; selected: number; handlers: MenuHandlers } | null = null;
 
@@ -190,6 +203,7 @@ export function showMenu(
   creditsButton.onclick = () => handlers.onCredits();
   cameraButton.onclick = () => handlers.onToggleCamera();
   shakeButton.onclick = () => handlers.onToggleShake();
+  qualityButton.onclick = () => handlers.onCycleQuality();
   resetButton.onclick = () => {
     if (confirm("Сбросить прогресс всех уровней?")) handlers.onReset();
   };
@@ -264,6 +278,9 @@ const CREDITS: { heading: string; lines: [string, string][] }[] = [
       ["HDR-bloom", "свечение монет, фонарей, солнца и луны"],
       ["Neutral tone mapping", "сочные цвета без пересветов"],
       ["Инстансинг", "тысячи травинок и тело змейки за один вызов отрисовки"],
+      ["Статический батчинг", "сотни мешей мира слиты по материалам: 854 вызова отрисовки → 85"],
+      ["Волны на GPU", "океан анимируется в вершинном шейдере"],
+      ["Адаптивное качество", "пресеты под устройство и автоснижение при просадке FPS"],
     ],
   },
   {
